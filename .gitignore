@@ -22,7 +22,6 @@ env/
 # Logs
 logs/
 *.log
-*.out
 input/logs/
 logic/logs/
 
@@ -39,3 +38,7 @@ Desktop.ini
 
 # Misc
 *.bak
+
+*.out
+upload_model.py
+upload_model.py

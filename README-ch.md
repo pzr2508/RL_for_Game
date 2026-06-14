@@ -155,7 +155,6 @@ python pretrain_reward_model.py --epochs 1000 --batch-size 16 --gpus 0,1,2,3
 ---
 
 ## 下载训练集（扩充训练数据集，可以进行 1. 数据采集）
-Run:
 ```bash
 https://huggingface.co/datasets/zhirui001/RL_for_Game_Dataset
 ```

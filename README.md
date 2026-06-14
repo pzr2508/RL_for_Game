@@ -151,7 +151,6 @@ Supervised pretraining on offline CSV data before starting online learning.
 ---
 
 ## Download Dataset
-Run:
 ```bash
 https://huggingface.co/datasets/zhirui001/RL_for_Game_Dataset
 ```
