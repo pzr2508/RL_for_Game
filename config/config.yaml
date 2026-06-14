@@ -1,0 +1,82 @@
+app:
+  recorder_fps: 60             # 游戏视频的fps
+  train_fps: 10                # 训练时视频fps（相当于训练集相邻帧之间的时间间隔为1/train_fps秒）
+
+screen:
+  monitor_id: 1                # 监控的显示器号
+  width: 3840                  # 监控的显示器的宽分辨率
+  height: 2160                 # 监控的显示器的高分辨率
+
+ai:
+  continue_frames_num: 10      # 连续num帧作为state的输入
+  frams_resize: 640           # 模型需要输入的视频帧尺寸
+  enable: true
+
+paths:
+  model_path: "models/dueling_dqn_2000.pth"          # 模型保存路径
+  records_csv: "train_data/records.csv"         # 训练数据记录csv路径 
+  tensorboard_dir: "runs/dueling_dqn"           # TensorBoard日志保存路径
+
+train:
+  batch_size: 16                           # 训练批次大小
+  auto_batch_size: false                   # 是否按GPU显存自动缩放batch_size
+  batch_ref_gpu_mem_gb: 16.0              # 参考显存(GB)，base batch_size 对应的单卡显存基准
+  max_batch_size: 128                     # 自动缩放后的batch_size上限
+  epochs: 2000                            # 训练轮数
+  start_epoch: 1                          # 从哪个轮数开始训练（用于继续训练）              
+  save_every: 100                          # 每多少轮保存一次模型    
+  num_workers: 4                          # 数据加载的线程数
+  pin_memory: true                        # 是否将数据加载到固定内存中
+  balance_actions: true                   # 是否按动作频次做均衡采样
+  balance_alpha: 0.1                      # 均衡采样强度：0=关闭均衡，1=完全按逆频率
+  gpu_ids: [0,1,2,3]                            # 训练使用的GPU卡号，可设为 [0,1,2]
+
+inference:
+  sleep_ms_when_empty: 200                # 推理时如果没有数据，等待多少毫秒后再检查
+
+rl:
+  gamma: 0.99                             # 折扣因子
+  lr: 0.0001                              # 学习率                         
+  epsilon_start: 0.15                     # epsilon-greedy策略中epsilon的初始值，当前用不到
+  epsilon_end: 0.02                       # epsilon-greedy策略中epsilon的最终值，当前用不到
+  epsilon_decay_steps: 1000               # epsilon衰减的步数，当前用不到
+  target_update: 100                      # 目标网络更新的步数（多少个epoch目标网络更新一次）
+  grad_clip: 1.0                          # 梯度裁剪的阈值    
+  use_double_dqn: true                    # 是否使用Double DQN
+  model_dim: 1024                          # 时序特征维度（需能被transformer_heads整除）
+  transformer_layers: 8                   # Transformer时序编码层数
+  transformer_heads: 8                    # 多头注意力头数
+  transformer_dropout: 0.1                # Transformer和融合层dropout
+  inference_topk: 3                       # 推理时打印Q值前K个动作
+  inference_log_every: 30                 # 每多少次推理打印一次top-k日志，<=0关闭
+  inference_tie_delta: 15.0                # 若top1-top2小于该阈值，则视为近似并列并触发随机打破平局
+  inference_tie_topk: 3                   # 触发平局时在前K个动作内按softmax概率采样
+  inference_tie_temperature: 5.0          # 平局采样温度，越大越均匀；<=0时按均匀分布采样
+
+record:
+  enable: true                            # 是否启用视频录制
+  output_dir: "./videos"                  # 视频保存目录
+
+online:
+  enable: false                           # 是否启用在线学习（推理时同时训练）
+  buffer_capacity: 400                    # Replay Buffer 最大容量
+  min_buffer_size: 200                    # Buffer中至少多少样本后才开始训练
+  train_every: 4                          # 每多少个环境步骤训练一次
+  batch_size: 16                          # 在线训练的batch size
+  save_buffer_path: "./train_data/replay_buffer.npz"  # Buffer持久化路径
+  save_every_episodes: 50                 # 每多少个episode保存一次buffer和模型
+  use_per: true                          # 是否使用优先经验回放(PER)
+  per_alpha: 0.6                          # PER 优先级指数
+  per_beta_start: 0.4                     # PER 重要性采样初始beta
+  per_beta_end: 1.0                       # PER 重要性采样最终beta
+  per_beta_anneal_steps: 100000           # PER beta退火步数
+  reward_model:                           # 学习型奖励模型配置
+    path: "models/reward_model.pth"       # 奖励模型保存/加载路径
+    hidden_dim: 1024                      # 奖励模型隐藏层维度
+    lr: 0.0003                            # 奖励模型在线更新学习率
+    update_every: 20                      # 每多少步更新一次奖励模型
+    save_every_steps: 200                 # 每多少步保存一次奖励模型
+
+log:
+  level: INFO                             # 日志级别
+  file: "./logs/app.log"                  # 日志文件路径
