@@ -492,6 +492,7 @@ class RewardModel:
         # (full state arrays are large, so only keep the most recent entries)
         offline_snapshot = list(self.offline_replay)[-100:] if self.offline_replay else []
         online_snapshot = list(self.online_buffer)[-50:] if self.online_buffer else []
+        tmp_path = path + ".tmp"
         torch.save({
             "net": net_to_save.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -500,12 +501,13 @@ class RewardModel:
             "update_steps": self._update_steps,
             "offline_replay": offline_snapshot,
             "online_buffer": online_snapshot,
-        }, path)
+        }, tmp_path)
+        os.replace(tmp_path, path)
         logger.info(f"RewardModel saved to {path}")
 
     def load(self, path: str):
         """Load reward model checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         target = self._get_net_module()
         target.load_state_dict(checkpoint["net"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])

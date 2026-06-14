@@ -1,4 +1,5 @@
 ﻿import random
+import os
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
@@ -15,9 +16,13 @@ from utils.my_logger import logger
 class AgentConfig:
     gamma: float = 0.99
     lr: float = 1e-4
+    exploration_method: str = "epsilon"
     epsilon_start: float = 0.15
     epsilon_end: float = 0.02
     epsilon_decay_steps: int = 200000
+    boltzmann_temperature_start: float = 5.0
+    boltzmann_temperature_end: float = 0.5
+    boltzmann_temperature_decay_steps: int = 50000
     target_update: int = 1000
     grad_clip: float = 1.0
     use_double_dqn: bool = True
@@ -231,9 +236,13 @@ class RLAgent:
         self.cfg = AgentConfig(
             gamma=cfg.get("gamma", 0.99),
             lr=cfg.get("lr", 1e-4),
+            exploration_method=cfg.get("exploration_method", "epsilon"),
             epsilon_start=cfg.get("epsilon_start", 0.15),
             epsilon_end=cfg.get("epsilon_end", 0.02),
             epsilon_decay_steps=cfg.get("epsilon_decay_steps", 200000),
+            boltzmann_temperature_start=cfg.get("boltzmann_temperature_start", 5.0),
+            boltzmann_temperature_end=cfg.get("boltzmann_temperature_end", 0.5),
+            boltzmann_temperature_decay_steps=cfg.get("boltzmann_temperature_decay_steps", 50000),
             target_update=cfg.get("target_update", target_update),
             grad_clip=cfg.get("grad_clip", 1.0),
             use_double_dqn=cfg.get("use_double_dqn", True),
@@ -287,6 +296,10 @@ class RLAgent:
         progress = min(1.0, self.total_env_steps / float(self.cfg.epsilon_decay_steps))
         return self.cfg.epsilon_start + (self.cfg.epsilon_end - self.cfg.epsilon_start) * progress
 
+    def _compute_temperature(self) -> float:
+        progress = min(1.0, self.total_env_steps / float(self.cfg.boltzmann_temperature_decay_steps))
+        return self.cfg.boltzmann_temperature_start + (self.cfg.boltzmann_temperature_end - self.cfg.boltzmann_temperature_start) * progress
+
     def set_train_mode(self):
         """Set online_net to training mode. Call once before the training loop."""
         self.online_net.train()
@@ -300,16 +313,25 @@ class RLAgent:
             return 0
 
         self.total_env_steps += 1 if train else 0
-        epsilon = self._compute_epsilon() if train else 0.0
-
-        if train and random.random() < epsilon:
-            return random.randrange(self.num_actions)
 
         state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             q_values = self.online_net(state_tensor)
 
         q_row = q_values.squeeze(0)
+
+        if train and self.cfg.exploration_method == "boltzmann":
+            temperature = self._compute_temperature()
+            scaled_logits = (q_row - q_row.max()) / max(temperature, 1e-8)
+            probs = torch.softmax(scaled_logits, dim=0)
+            action = int(torch.multinomial(probs, num_samples=1).item())
+            return action
+
+        epsilon = self._compute_epsilon() if train else 0.0
+
+        if train and random.random() < epsilon:
+            return random.randrange(self.num_actions)
+
         action = int(q_row.argmax(dim=0).item())
         tie_break_applied = False
         tie_margin = None
@@ -397,6 +419,7 @@ class RLAgent:
     def save(self, path: str):
         online_to_save = self.online_net.module if isinstance(self.online_net, nn.DataParallel) else self.online_net
         target_to_save = self.target_net.module if isinstance(self.target_net, nn.DataParallel) else self.target_net
+        tmp_path = path + ".tmp"
         torch.save(
             {
                 "online_net": online_to_save.state_dict(),
@@ -406,11 +429,13 @@ class RLAgent:
                 "total_env_steps": self.total_env_steps,
                 "agent_config": self.cfg.__dict__,
             },
-            path,
+            tmp_path,
         )
+        os.replace(tmp_path, path)
+        logger.info(f"Agent saved to {path}")
 
     def load(self, path: str, strict: bool = True):
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         def _load_state_with_fallback(model: nn.Module, state_dict: dict, model_name: str):
             target_model = model.module if isinstance(model, nn.DataParallel) else model

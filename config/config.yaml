@@ -13,12 +13,12 @@ ai:
   enable: true
 
 paths:
-  model_path: "models/dueling_dqn_2000.pth"          # 模型保存路径
+  model_path: "models/dueling_dqn_2000_600.pth"          # 模型保存路径
   records_csv: "train_data/records.csv"         # 训练数据记录csv路径 
   tensorboard_dir: "runs/dueling_dqn"           # TensorBoard日志保存路径
 
 train:
-  batch_size: 16                           # 训练批次大小
+  batch_size: 4                           # 训练批次大小
   auto_batch_size: false                   # 是否按GPU显存自动缩放batch_size
   batch_ref_gpu_mem_gb: 16.0              # 参考显存(GB)，base batch_size 对应的单卡显存基准
   max_batch_size: 128                     # 自动缩放后的batch_size上限
@@ -37,9 +37,13 @@ inference:
 rl:
   gamma: 0.99                             # 折扣因子
   lr: 0.0001                              # 学习率                         
-  epsilon_start: 0.15                     # epsilon-greedy策略中epsilon的初始值，当前用不到
-  epsilon_end: 0.02                       # epsilon-greedy策略中epsilon的最终值，当前用不到
-  epsilon_decay_steps: 1000               # epsilon衰减的步数，当前用不到
+  exploration_method: "boltzmann"           # 探索策略: "epsilon" 或 "boltzmann"
+  epsilon_start: 1.0                      # epsilon-greedy: 初始探索率（1.0=完全随机开始）
+  epsilon_end: 0.02                       # epsilon-greedy: 最终探索率
+  epsilon_decay_steps: 50000              # epsilon衰减步数（50000步后降到 epsilon_end）
+  boltzmann_temperature_start: 10.0        # Boltzmann探索: 初始温度（越高越随机）
+  boltzmann_temperature_end: 5          # Boltzmann探索: 最终温度
+  boltzmann_temperature_decay_steps: 50000 # Boltzmann温度衰减步数
   target_update: 100                      # 目标网络更新的步数（多少个epoch目标网络更新一次）
   grad_clip: 1.0                          # 梯度裁剪的阈值    
   use_double_dqn: true                    # 是否使用Double DQN
@@ -58,23 +62,25 @@ record:
   output_dir: "./videos"                  # 视频保存目录
 
 online:
-  enable: false                           # 是否启用在线学习（推理时同时训练）
+  enable: true                           # 是否启用在线学习（推理时同时训练）
+  action_interval_seconds: 3.0           # 动作执行间隔（秒），0=不限制
   buffer_capacity: 400                    # Replay Buffer 最大容量
-  min_buffer_size: 200                    # Buffer中至少多少样本后才开始训练
-  train_every: 4                          # 每多少个环境步骤训练一次
-  batch_size: 16                          # 在线训练的batch size
+  min_buffer_size: 32                     # Buffer中至少多少样本后才开始训练（原200→32，首训从10分钟→96秒）
+  train_every: 16                          # 每多少个环境步骤训练一次（每次动作循环都训练）
+  batch_size: 8                           # 在线训练的batch size（原2→8，每个梯度步学更多）
+  train_steps_per_trigger: 5              # 每次训练块连续做几个梯度步（让单次训练更充分）
   save_buffer_path: "./train_data/replay_buffer.npz"  # Buffer持久化路径
-  save_every_episodes: 50                 # 每多少个episode保存一次buffer和模型
+  save_every_train_steps: 30              # 每多少个训练步保存一次DQN模型（0=不启用周期性保存）
   use_per: true                          # 是否使用优先经验回放(PER)
-  per_alpha: 0.6                          # PER 优先级指数
-  per_beta_start: 0.4                     # PER 重要性采样初始beta
+  per_alpha: 0.3                          # PER 优先级指数
+  per_beta_start: 0.7                     # PER 重要性采样初始beta
   per_beta_end: 1.0                       # PER 重要性采样最终beta
   per_beta_anneal_steps: 100000           # PER beta退火步数
   reward_model:                           # 学习型奖励模型配置
     path: "models/reward_model.pth"       # 奖励模型保存/加载路径
     hidden_dim: 1024                      # 奖励模型隐藏层维度
     lr: 0.0003                            # 奖励模型在线更新学习率
-    update_every: 20                      # 每多少步更新一次奖励模型
+    update_every: 40                      # 每多少步更新一次奖励模型
     save_every_steps: 200                 # 每多少步保存一次奖励模型
 
 log:

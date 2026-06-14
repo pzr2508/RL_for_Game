@@ -8,6 +8,7 @@ Supports:
 """
 
 import random
+import os
 import numpy as np
 import torch
 from collections import deque
@@ -136,7 +137,9 @@ class ReplayBuffer:
                 for t in self.buffer
             ],
         }
-        np.savez_compressed(path, data=np.array([data], dtype=object))
+        tmp_path = path + ".tmp"
+        np.savez_compressed(tmp_path, data=np.array([data], dtype=object))
+        os.replace(tmp_path, path)
         logger.info(f"ReplayBuffer saved: {len(self.buffer)} transitions -> {path}")
 
     def load(self, path: str):

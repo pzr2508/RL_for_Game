@@ -5,11 +5,11 @@ import numpy as np
 from utils.my_logger import logger
 
 class ScreenCaptureThread(threading.Thread):
-    def __init__(self, buffer, config):
+    def __init__(self, buffer, config, capture_fps=None):
         super().__init__(daemon=True)
         self.buffer = buffer
         self.running = True
-        self.fps = config["app"]["recorder_fps"]
+        self.fps = capture_fps if capture_fps is not None and capture_fps > 0 else config["app"]["recorder_fps"]
 
         self.monitor_id = config["screen"].get("monitor_id", 1)
         self.screen_width = config["screen"]["width"]
