@@ -30,6 +30,7 @@ train_data/
 models/
 videos/
 runs/
+videos/
 
 # OS
 Thumbs.db
