@@ -150,6 +150,12 @@ Supervised pretraining on offline CSV data before starting online learning.
 
 ---
 
+## Download Dataset
+Run:
+```bash
+https://huggingface.co/datasets/zhirui001/RL_for_Game_Dataset
+```
+
 ## Configuration
 
 All settings live in [config/config.yaml](config/config.yaml). CLI arguments override equivalent config values.
