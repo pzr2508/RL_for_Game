@@ -4,6 +4,7 @@ A reinforcement learning framework for automatic game control. The agent learns 
 
 ---
 
+
 ## Features
 
 - **Dueling DQN** — Value/Advantage dual streams with shared convolutional backbone
@@ -20,6 +21,8 @@ A reinforcement learning framework for automatic game control. The agent learns 
 - **TensorBoard logging** — Training/online metrics visualization
 
 ---
+
+![image](imgs/title.png)
 
 ## Project Structure
 
