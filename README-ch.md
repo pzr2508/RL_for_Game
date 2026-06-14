@@ -23,6 +23,10 @@
 
 ![image](imgs/title.png)
 
+---
+## AI（RL）玩GTA5
+![AI（RL）玩GTA5](imgs/output.gif)
+
 ## 项目结构
 
 ```
