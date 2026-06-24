@@ -59,6 +59,9 @@ class OnlineTrainer:
         per_beta_start: float = 0.4,
         per_beta_end: float = 1.0,
         per_beta_anneal_steps: int = 100000,
+        normalize_reward: bool = True,
+        state_shape: tuple = (10, 84, 84),
+        per_priority_mode: str = "proportional",
     ):
         """
         Args:
@@ -72,6 +75,11 @@ class OnlineTrainer:
             per_beta_start: PER initial importance sampling beta
             per_beta_end: PER final beta
             per_beta_anneal_steps: Steps to anneal beta
+            normalize_reward: Whether to normalize rewards in the buffer.
+                Set to False when using a learned reward model that already
+                outputs normalized rewards (avoids double normalization).
+            state_shape: Shape of a single state (frames, H, W).
+            per_priority_mode: PER priority mode — "proportional" or "rank".
         """
         self.agent = agent
         self.batch_size = batch_size
@@ -86,9 +94,12 @@ class OnlineTrainer:
                 beta_start=per_beta_start,
                 beta_end=per_beta_end,
                 beta_anneal_steps=per_beta_anneal_steps,
+                normalize_reward=normalize_reward,
+                priority_mode=per_priority_mode,
             )
         else:
-            self.buffer = ReplayBuffer(capacity=buffer_capacity)
+            self.buffer = ReplayBuffer(capacity=buffer_capacity, normalize_reward=normalize_reward,
+                                       state_shape=state_shape)
 
         # Internal state tracking
         self._current_state = None
@@ -187,9 +198,10 @@ class OnlineTrainer:
             s1, a, r, s2, done = self.buffer.sample(self.batch_size)
             loss, q_mean, _ = self.agent.train_step(s1, a, r, s2, done)
 
-        # Online mode: sync target network every target_update train steps
-        # (online mode has no epochs, so step-based is the only option)
-        if self._train_steps % self.agent.cfg.target_update == 0:
+        # Online mode: if Polyak soft sync is disabled, fall back to hard sync
+        # at fixed intervals. When use_polyak=True, _polyak_update() in
+        # agent.train_step() already handles target network updates every step.
+        if not self.agent.cfg.use_polyak and self._train_steps % self.agent.cfg.target_update == 0:
             self.agent.sync_target_network()
 
         return {"loss": loss, "q_mean": q_mean}

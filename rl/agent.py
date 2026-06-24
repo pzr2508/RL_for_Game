@@ -1,4 +1,5 @@
-﻿import random
+﻿import math
+import random
 import os
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
@@ -8,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
 
 from utils.my_logger import logger
 
@@ -36,6 +38,12 @@ class AgentConfig:
     inference_tie_topk: int = 3
     inference_tie_temperature: float = 5.0
     gpu_ids: Tuple[int, ...] = ()
+    # Polyak soft update
+    polyak_tau: float = 0.005
+    use_polyak: bool = True
+    # LR scheduler
+    lr_warmup_steps: int = 1000
+    lr_min_ratio: float = 0.01
 
 
 class ResidualBlock(nn.Module):
@@ -66,11 +74,50 @@ class TemporalPositionalEncoding(nn.Module):
         return x + self.pos_embedding[:, :seq_len, :]
 
 
+class TemporalCNN(nn.Module):
+    """Lightweight 1D temporal conv pathway (the 'fast' branch).
+
+    Runs a stack of 1D convolutions over the frame-feature sequence to capture
+    short-term motion cues. This is parallel to the Transformer encoder and
+    the outputs are fused, similar to SlowFast / VideoResNet architectures.
+    """
+
+    def __init__(self, model_dim: int, kernel_size: int = 3, num_layers: int = 2):
+        super().__init__()
+        layers = []
+        in_ch = model_dim
+        for i in range(num_layers):
+            out_ch = model_dim
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size,
+                                     padding=kernel_size // 2, bias=False))
+            layers.append(nn.BatchNorm1d(out_ch))
+            layers.append(nn.ReLU(inplace=True))
+            in_ch = out_ch
+        self.conv = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward.
+
+        Args:
+            x: (batch, seq_len, model_dim) — frame features from FrameEncoder
+
+        Returns:
+            (batch, model_dim) — temporally-pooled feature vector
+        """
+        # Conv1d expects (B, C, L)
+        h = self.conv(x.permute(0, 2, 1))       # (B, model_dim, seq_len)
+        h = h.mean(dim=2)                         # global average pool -> (B, model_dim)
+        return h
+
+
 class SharedBackbone(nn.Module):
     """Full temporal feature backbone — the entire forward_features logic.
 
-    Encapsulates: FrameEncoder -> PositionalEncoding -> TransformerEncoder ->
-    temporal attention pooling + last-frame -> Fusion (512-dim).
+    Dual-path architecture:
+      - Slow path: Transformer encoder with attention pooling + last frame
+      - Fast path: 1D temporal CNN with global average pooling
+
+    The two paths are concatenated (model_dim * 2) then fused to 512-dim.
 
     A single instance can be shared between DuelingDQN (online_net) and
     RewardNet. Both optimizers update the same underlying parameters.
@@ -81,6 +128,7 @@ class SharedBackbone(nn.Module):
         self.frame_encoder = FrameEncoder(cfg.model_dim)
         self.pos_encoder = TemporalPositionalEncoding(cfg.model_dim, input_frames)
 
+        # --- Slow path: Transformer ---
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=cfg.model_dim,
             nhead=cfg.transformer_heads,
@@ -97,8 +145,16 @@ class SharedBackbone(nn.Module):
             nn.Tanh(),
             nn.Linear(cfg.model_dim // 2, 1),
         )
+
+        # --- Fast path: 1D Temporal CNN ---
+        self.temporal_cnn = TemporalCNN(cfg.model_dim)
+
+        # --- Fusion: slow features + fast features -> 512 ---
+        # slow path = context_feat (model_dim) + last_feat (model_dim) = model_dim * 2
+        # fast path = temporal CNN output = model_dim
+        # total = model_dim * 3
         self.fusion = nn.Sequential(
-            nn.Linear(cfg.model_dim * 2, 512),
+            nn.Linear(cfg.model_dim * 3, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(cfg.transformer_dropout),
         )
@@ -117,6 +173,7 @@ class SharedBackbone(nn.Module):
         frame_feat = self.frame_encoder(x)
         frame_feat = frame_feat.view(batch_size, seq_len, self.model_dim)
 
+        # --- Slow path (Transformer) ---
         temporal_feat = self.pos_encoder(frame_feat)
         temporal_feat = self.temporal_encoder(temporal_feat)
 
@@ -124,8 +181,13 @@ class SharedBackbone(nn.Module):
         attn_weight = torch.softmax(attn_logits, dim=1)
         context_feat = (attn_weight * temporal_feat).sum(dim=1)
         last_feat = temporal_feat[:, -1, :]
+        slow_feat = torch.cat([context_feat, last_feat], dim=1)  # (B, model_dim*2)
 
-        fused_feat = self.fusion(torch.cat([context_feat, last_feat], dim=1))
+        # --- Fast path (1D CNN) ---
+        fast_feat = self.temporal_cnn(frame_feat)  # (B, model_dim)
+
+        # --- Fuse ---
+        fused_feat = self.fusion(torch.cat([slow_feat, fast_feat], dim=1))
         return fused_feat
 
 
@@ -256,6 +318,10 @@ class RLAgent:
             inference_tie_topk=cfg.get("inference_tie_topk", 3),
             inference_tie_temperature=cfg.get("inference_tie_temperature", 5.0),
             gpu_ids=_normalize_gpu_ids(cfg.get("gpu_ids", ())),
+            polyak_tau=cfg.get("polyak_tau", 0.005),
+            use_polyak=cfg.get("use_polyak", True),
+            lr_warmup_steps=cfg.get("lr_warmup_steps", 1000),
+            lr_min_ratio=cfg.get("lr_min_ratio", 0.01),
         )
 
         if self.cfg.model_dim % self.cfg.transformer_heads != 0:
@@ -288,6 +354,10 @@ class RLAgent:
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.online_net.parameters(), lr=self.cfg.lr)
+
+        # LR scheduler: linear warmup then cosine decay
+        self.scheduler = self._build_lr_scheduler()
+
         self.update_counter = 0
         self.total_env_steps = 0
         self.inference_steps = 0
@@ -307,6 +377,33 @@ class RLAgent:
     def set_eval_mode(self):
         """Set online_net to evaluation mode. Call once before the inference loop."""
         self.online_net.eval()
+
+    # ------------------------------------------------------------------
+    # LR Scheduler
+    # ------------------------------------------------------------------
+    def _build_lr_scheduler(self, total_train_steps: int = 0) -> LambdaLR:
+        """Linear warmup then cosine decay to lr * lr_min_ratio."""
+        warmup = self.cfg.lr_warmup_steps
+        min_ratio = self.cfg.lr_min_ratio
+        # Use provided total steps, fallback to a reasonable default
+        total = total_train_steps if total_train_steps > 0 else self.cfg.target_update * 200
+
+        def lr_lambda(step):
+            if warmup > 0 and step < warmup:
+                return float(step) / float(max(1, warmup))
+            else:
+                progress = float(step - warmup) / float(max(1, total - warmup))
+                return min_ratio + 0.5 * (1.0 - min_ratio) * (1.0 + math.cos(math.pi * min(1.0, progress)))
+
+        return LambdaLR(self.optimizer, lr_lambda)
+
+    def _polyak_update(self):
+        """Soft update: target = tau * online + (1 - tau) * target."""
+        tau = self.cfg.polyak_tau
+        online_net = self.online_net.module if isinstance(self.online_net, nn.DataParallel) else self.online_net
+        target_net = self.target_net.module if isinstance(self.target_net, nn.DataParallel) else self.target_net
+        for tp, op in zip(target_net.parameters(), online_net.parameters()):
+            tp.data.mul_(1.0 - tau).add_(op.data, alpha=tau)
 
     def select_action(self, state: np.ndarray, train: bool = True) -> int:
         if state is None:
@@ -395,8 +492,8 @@ class RLAgent:
 
         if weights is not None:
             weights = weights.to(self.device, dtype=torch.float32).view(-1)
-            per_sample_loss = F.smooth_l1_loss(q_sa, target_q, reduction='none')
-            loss = (per_sample_loss * weights).mean()
+            element_wise_loss = F.smooth_l1_loss(q_sa, target_q, reduction='none')
+            loss = (element_wise_loss * weights).mean()
         else:
             loss = F.smooth_l1_loss(q_sa, target_q)
 
@@ -404,17 +501,26 @@ class RLAgent:
         loss.backward()
         nn.utils.clip_grad_norm_(self.online_net.parameters(), self.cfg.grad_clip)
         self.optimizer.step()
+        self.scheduler.step()
 
         self.update_counter += 1
+
+        # Polyak soft update target network every step
+        if self.cfg.use_polyak:
+            self._polyak_update()
 
         with torch.no_grad():
             per_sample_td = (target_q - q_sa).abs().detach().cpu().numpy()
         return float(loss.item()), float(q_sa.mean().item()), per_sample_td
 
     def sync_target_network(self):
-        """Copy online_net weights to target_net. Should be called every target_update epochs."""
+        """Hard copy online_net -> target_net. Fallback for offline training or when use_polyak=False."""
         self.target_net.load_state_dict(self.online_net.state_dict())
-        logger.info(f"Target network synced at update_counter={self.update_counter}")
+        logger.info(f"Target network synced (hard copy) at update_counter={self.update_counter}")
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
 
     def save(self, path: str):
         online_to_save = self.online_net.module if isinstance(self.online_net, nn.DataParallel) else self.online_net
@@ -425,6 +531,7 @@ class RLAgent:
                 "online_net": online_to_save.state_dict(),
                 "target_net": target_to_save.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
+                "scheduler": self.scheduler.state_dict(),
                 "update_counter": self.update_counter,
                 "total_env_steps": self.total_env_steps,
                 "agent_config": self.cfg.__dict__,
@@ -497,6 +604,8 @@ class RLAgent:
 
         if "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if "scheduler" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
 
         self.update_counter = int(checkpoint.get("update_counter", 0))
         self.total_env_steps = int(checkpoint.get("total_env_steps", 0))

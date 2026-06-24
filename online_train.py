@@ -47,24 +47,13 @@ def run_online(runtime, config):
     import keyboard as kb_hotkey
 
     # --- Setup Agent ---
-    # Create shared backbone for both online_net and reward model
     agent_cfg_dict = runtime["rl_agent_cfg"]
-    shared_backbone = SharedBackbone(
-        input_frames=runtime["state_frames"],
-        cfg=AgentConfig(
-            model_dim=agent_cfg_dict.get("model_dim", 256),
-            transformer_layers=agent_cfg_dict.get("transformer_layers", 2),
-            transformer_heads=agent_cfg_dict.get("transformer_heads", 8),
-            transformer_dropout=agent_cfg_dict.get("transformer_dropout", 0.1),
-        ),
-    )
 
     agent = RLAgent(
         num_actions=ACTION_NUM,
         model_input_dime=runtime["state_frames"],
         target_update=runtime["target_update"],
         config=runtime["rl_agent_cfg"],
-        backbone=shared_backbone,
     )
 
     if os.path.exists(runtime["model_path"]):
@@ -74,25 +63,21 @@ def run_online(runtime, config):
     online_cfg = runtime["online"]
 
     # --- Setup Learned Reward Model ---
+    # IMPORTANT: Reward model uses its OWN backbone (no sharing with DQN)
+    # to avoid conflicting gradient updates between the two optimizers.
     reward_model_cfg = online_cfg.get("reward_model", {})
     reward_model_path = reward_model_cfg.get("path", "models/reward_model.pth")
     reward_model = RewardModel(
         input_frames=runtime["state_frames"],
         num_actions=ACTION_NUM,
         hidden_dim=reward_model_cfg.get("hidden_dim", 256),
-        backbone=shared_backbone,
+        backbone=None,  # Own backbone to avoid gradient conflicts with DQN
         lr=reward_model_cfg.get("lr", 3e-4),
         device=None,
     )
     if os.path.exists(reward_model_path):
         reward_model.load(reward_model_path)
         logger.info(f"Loaded pretrained reward model: {reward_model_path}")
-        # Restore shared backbone to DQN state.
-        # reward_model.load() writes its own backbone weights into shared_backbone,
-        # overwriting the DQN weights. target_net.backbone is independent and
-        # still holds the DQN checkpoint's backbone state.
-        shared_backbone.load_state_dict(agent.target_net.backbone.state_dict())
-        logger.info("Restored shared backbone to DQN checkpoint weights")
     else:
         logger.warning(
             f"Reward model not found at {reward_model_path}. "
@@ -100,8 +85,14 @@ def run_online(runtime, config):
             "Run: python pretrain_reward_model.py"
         )
 
-    reward_model_update_every = reward_model_cfg.get("update_every", 20)
+    reward_model_update_every = reward_model_cfg.get("update_every", 16)
     reward_model_save_every = reward_model_cfg.get("save_every_steps", 200)
+
+    # Alternating training: DQN trains more frequently than reward model.
+    # reward_model trains once for every N DQN training steps.
+    # Default ratio: 1 reward model update per 3 DQN updates.
+    reward_model_train_ratio = int(reward_model_cfg.get("train_ratio", 3))
+    dqn_train_counter = 0
 
     action_interval = online_cfg.get("action_interval_seconds", 0.0)
     if action_interval > 0:
@@ -120,9 +111,10 @@ def run_online(runtime, config):
     _offline_rm_mean = 0.0
     _offline_rm_std = 1.0
     _offline_refresh_interval = max(100, reward_model_save_every * 2)
+    _rm_pretrained = os.path.exists(reward_model_path)
 
     # --- Populate offline_replay for anti-forgetting ---
-    if len(reward_model.offline_replay) == 0:
+    if len(reward_model.offline_replay) == 0 and _rm_pretrained:
         try:
             from data_loader import load_csv_to_cache, compute_reward_stats
             csv_path = runtime["records_csv"]
@@ -145,6 +137,8 @@ def run_online(runtime, config):
             logger.warning(f"Failed to populate offline_replay from CSV: {e}")
 
     # --- Setup Online Trainer with Replay Buffer ---
+    # NOTE: normalize_reward=False because the reward model already outputs
+    # normalized rewards. Double normalization would distort the training signal.
     trainer = OnlineTrainer(
         agent=agent,
         buffer_capacity=online_cfg["buffer_capacity"],
@@ -156,6 +150,9 @@ def run_online(runtime, config):
         per_beta_start=online_cfg.get("per_beta_start", 0.4),
         per_beta_end=online_cfg.get("per_beta_end", 1.0),
         per_beta_anneal_steps=online_cfg.get("per_beta_anneal_steps", 100000),
+        normalize_reward=False,
+        state_shape=(runtime["state_frames"],) + ((runtime["frame_size"], runtime["frame_size"]) if isinstance(runtime["frame_size"], int) else tuple(runtime["frame_size"])),
+        per_priority_mode=online_cfg.get("per_priority_mode", "proportional"),
     )
 
     # Optionally load existing buffer
@@ -257,49 +254,10 @@ def run_online(runtime, config):
 
                     trainer.observe(current_state, reward, done)
 
-                    # --- Online update of reward model (TD-consistency) ---
-                    reward_model_step_count += 1
-                    if reward_model_step_count % reward_model_update_every == 0:
-                        logger.info("正在模型训练中（奖励模型）...")
-                        rm_loss = reward_model.update_online(
-                            state=prev_state,
-                            action=prev_action,
-                            q_agent=agent,
-                            next_state=current_state,
-                            gamma=agent.cfg.gamma,
-                            min_batch=4,
-                            update_every=1,
-                            num_train_steps=1,
-                        )
-                        if rm_loss is not None:
-                            logger.info("本次模型训练完成（奖励模型）")
-                            writer.add_scalar("online/reward_model_loss", rm_loss, reward_model_step_count)
-                            # Periodically refresh offline_replay for diversity
-                            if (_offline_cache_for_refresh is not None
-                                and reward_model_step_count - last_refresh_step >= _offline_refresh_interval):
-                                try:
-                                    reward_model.refresh_offline_replay(
-                                        _offline_cache_for_refresh,
-                                        img_size=runtime["frame_size"],
-                                        continue_num=runtime["state_frames"],
-                                        gap_num=1,
-                                        max_samples=200,
-                                        keep_ratio=0.6,
-                                        reward_mean=_offline_rm_mean,
-                                        reward_std=_offline_rm_std,
-                                    )
-                                    last_refresh_step = reward_model_step_count
-                                except Exception as e:
-                                    logger.warning(f"Failed to refresh offline_replay: {e}")
-
-                    # Save reward model periodically
-                    if reward_model_step_count % reward_model_save_every == 0:
-                        reward_model.save(reward_model_path)
-                        logger.info(f"模型保存完成（奖励模型）: {reward_model_path}")
-
                     # --- Train DQN from buffer ---
                     result = trainer.maybe_train()
                     if result:
+                        dqn_train_counter += 1
                         logger.info("本次模型训练完成（DQN）")
                         writer.add_scalar("online/loss", result["loss"], trainer.train_steps)
                         writer.add_scalar("online/q_mean", result["q_mean"], trainer.train_steps)
@@ -311,6 +269,47 @@ def run_online(runtime, config):
                                 writer.add_scalar("online/loss_extra", extra["loss"], trainer.train_steps)
                                 writer.add_scalar("online/q_mean_extra", extra["q_mean"], trainer.train_steps)
                                 logger.debug(f"额外训练 {train_steps_per_trigger - 1} 步完成")
+
+                        # --- Alternating reward model update ---
+                        # Train reward model once every reward_model_train_ratio DQN steps
+                        if dqn_train_counter % reward_model_train_ratio == 0:
+                            logger.info("正在模型训练中（奖励模型，交替训练）...")
+                            rm_loss = reward_model.update_online(
+                                state=prev_state,
+                                action=prev_action,
+                                q_agent=agent,
+                                next_state=current_state,
+                                gamma=agent.cfg.gamma,
+                                min_batch=4,
+                                update_every=1,
+                                num_train_steps=1,
+                            )
+                            if rm_loss is not None:
+                                reward_model_step_count += 1
+                                logger.info("本次模型训练完成（奖励模型）")
+                                writer.add_scalar("online/reward_model_loss", rm_loss, reward_model_step_count)
+                                # Periodically refresh offline_replay for diversity
+                                if (_offline_cache_for_refresh is not None
+                                    and reward_model_step_count - last_refresh_step >= _offline_refresh_interval):
+                                    try:
+                                        reward_model.refresh_offline_replay(
+                                            _offline_cache_for_refresh,
+                                            img_size=runtime["frame_size"],
+                                            continue_num=runtime["state_frames"],
+                                            gap_num=1,
+                                            max_samples=200,
+                                            keep_ratio=0.6,
+                                            reward_mean=_offline_rm_mean,
+                                            reward_std=_offline_rm_std,
+                                        )
+                                        last_refresh_step = reward_model_step_count
+                                    except Exception as e:
+                                        logger.warning(f"Failed to refresh offline_replay: {e}")
+
+                                # Save reward model periodically
+                                if reward_model_step_count % reward_model_save_every == 0:
+                                    reward_model.save(reward_model_path)
+                                    logger.info(f"模型保存完成（奖励模型）: {reward_model_path}")
 
                         # --- Periodic DQN save (after all training steps this cycle) ---
                         if dqn_save_interval > 0 and trainer.train_steps - last_dqn_save_step >= dqn_save_interval:

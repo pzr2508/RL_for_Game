@@ -152,9 +152,10 @@ class RewardModel:
         self.optimizer = optim.Adam(self.net.parameters(), lr=lr)
 
         # Online update buffer: stores recent (state, action, td_target) for fine-tuning
-        self.online_buffer = deque(maxlen=10000)
+        # With 640x640 float32 states, each entry is ~16 MB; keep this small.
+        self.online_buffer = deque(maxlen=400)
         # Offline replay buffer: stores a subset of pretrain data for anti-forgetting
-        self.offline_replay = deque(maxlen=5000)
+        self.offline_replay = deque(maxlen=400)
 
         self._update_steps = 0
         self._pretrain_loss = float("inf")

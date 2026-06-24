@@ -254,6 +254,13 @@ def run_train(runtime):
     writer = SummaryWriter(runtime["log_dir"])
 
     agent.set_train_mode()
+
+    # Compute total training steps for LR scheduler cosine decay schedule
+    total_train_steps = 0
+    for _ in range(runtime["start_epoch"], runtime["start_epoch"] + runtime["epochs"]):
+        total_train_steps += max(1, len(cache) // effective_batch_size)
+    agent.scheduler = agent._build_lr_scheduler(total_train_steps)
+
     logger.info(f"Start training: epochs={runtime['epochs']}, batch_size={effective_batch_size}")
     for epoch in range(runtime["start_epoch"], runtime["start_epoch"] + runtime["epochs"]):
         epoch_loss = 0.0
@@ -343,6 +350,7 @@ def run_inference(runtime, config):
 
             recorder.write(frame)
             frame_count += 1
+            time.sleep(0.1)
     finally:
         capture_thread.stop()
         recorder.release()

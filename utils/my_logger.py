@@ -86,6 +86,10 @@ class DailyLogger:
                 except:
                     pass
 
+    def debug(self, msg):
+        self._update_file_handler_if_needed()
+        self.logger.debug(msg)
+
     def info(self, msg):
         self._update_file_handler_if_needed()
         self.logger.info(msg)

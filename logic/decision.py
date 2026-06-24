@@ -79,36 +79,36 @@ class DecisionEngine:
         if action_id == 1:
             # 前进
             key_ = ACTIONS.get(action_id, {}).get("key")
-            self.keyboard.press_key(key_, duration=3)
+            self.keyboard.press_key(key_, duration=0.5)
 
         elif action_id == 2:
             # 向左转
             keys = ACTIONS.get(action_id, {}).get("key")
-            self.keyboard.combo(keys, duration=2)
+            self.keyboard.combo(keys, duration=0.4)
 
         elif action_id == 3:
             # 向右转
             keys = ACTIONS.get(action_id, {}).get("key")
-            self.keyboard.combo(keys, duration=2)
+            self.keyboard.combo(keys, duration=0.4)
 
         elif action_id == 4:
             # 向后转
             key_ = ACTIONS.get(action_id, {}).get("key")
-            self.keyboard.press_key(key_, duration=2)
+            self.keyboard.press_key(key_, duration=0.4)
 
         elif action_id == 5:
             # 前进，且视野向右移动
             key_ = ACTIONS.get(action_id, {}).get("key")
             mouse_ = ACTIONS.get(action_id, {}).get("mouse")
-            self.keyboard.press_key(key_, duration=1)
-            self.mouse.move_rel(*mouse_, duration=1)
+            self.keyboard.press_key(key_, duration=0.5)
+            self.mouse.move_rel(*mouse_, duration=0.3)
 
         elif action_id == 6:
             # 前进，且视野向左移动
             key_ = ACTIONS.get(action_id, {}).get("key")
             mouse_ = ACTIONS.get(action_id, {}).get("mouse")
-            self.keyboard.press_key(key_, duration=1)
-            self.mouse.move_rel(*mouse_, duration=1)
+            self.keyboard.press_key(key_, duration=0.5)
+            self.mouse.move_rel(*mouse_, duration=0.3)
 
         elif action_id == 7:
             # 进入驾驶
@@ -180,7 +180,7 @@ class DecisionEngine:
         elif action_id == 17:
             # 向前跑
             keys = [Key.shift, "w"]
-            self.keyboard.combo(keys, duration=3)
+            self.keyboard.combo(keys, duration=0.5)
         elif action_id == 18:
             # 鼠标向左移动
             self.mouse.move_rel(-600, 0, duration=0.2, steps=10)
@@ -196,15 +196,15 @@ class DecisionEngine:
         elif action_id == 22:
             # 向前跳
             keys = ['w', Key.space]
-            self.keyboard.combo(keys, duration=1)
+            self.keyboard.combo(keys, duration=0.4)
         elif action_id == 23:
             # 向左跑
             keys = ACTIONS.get(action_id, {}).get("key")
-            self.keyboard.combo(keys, duration=2)
+            self.keyboard.combo(keys, duration=0.5)
         elif action_id == 24:
             # 向右跑
             keys = ACTIONS.get(action_id, {}).get("key")
-            self.keyboard.combo(keys, duration=2)
+            self.keyboard.combo(keys, duration=0.5)
         else:
             # 最后一个是开秘籍，加武器
             self.keyboard.press_key("`", duration=0.02)
