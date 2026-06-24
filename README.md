@@ -27,7 +27,9 @@ A reinforcement learning framework for automatic game control. The agent learns 
 ---
 
 ## AI (RL) plays GTA5
-![AI (RL) plays GTA5](imgs/output.gif)
+<div align="center">
+  <img src="imgs/output.gif" alt="AI (RL) plays GTA5" width="640">
+</div>
 
 ## Project Structure
 
